@@ -65,7 +65,10 @@ func generateEventFilter(filter, filterValue string) (func(e *Event) bool, error
 				return false
 			}
 			// Prefix match with name for consistency with docker
-			return strings.HasPrefix(e.Name, filterValue)
+			if strings.HasPrefix(e.Name, filterValue) {
+				return true
+			}
+			return e.ID != "" && strings.HasPrefix(e.ID, filterValue)
 		}, nil
 	case "TYPE":
 		return func(e *Event) bool {
