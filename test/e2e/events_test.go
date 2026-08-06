@@ -44,21 +44,49 @@ var _ = Describe("Podman events", func() {
 		_, ec, vname := podmanTest.CreateVolume(nil)
 		Expect(ec).To(Equal(0))
 
-		// Run two event commands - one with the full volume name and the second with the prefix
+		// Create a second volume whose name shares the same first 5 chars as
+		// vname (possible since both come from the same safename pool); we
+		// construct one explicitly to guarantee a collision.  We want to make
+		// sure filtering by an exact name only returns events for THAT volume
+		// and not for other volumes whose names happen to share a prefix.
+		vnameAlt := vname + "-alt"
+		session := podmanTest.Podman([]string{"volume", "create", vnameAlt})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+		defer podmanTest.Podman([]string{"volume", "rm", vnameAlt}).WaitWithDefaultTimeout()
+
+		// 1. Exact name filter: must return only the create event for vname.
 		result := podmanTest.Podman([]string{"events", "--stream=false", "--filter", fmt.Sprintf("volume=%s", vname)})
+
+		// 2. Name prefix filter (first 5 chars): the original code supported
+		//    prefix matching and we preserve that. This also matches vnameAlt
+		//    because it starts with the same prefix; both volumes' events are
+		//    expected to appear.
 		resultPrefix := podmanTest.Podman([]string{"events", "--stream=false", "--filter", fmt.Sprintf("volume=%s", vname[:5])})
+
+		// 3. Non-matching filter: a string that is not a prefix of any volume
+		//    name and not an ID prefix must return zero events.  This verifies
+		//    the filter does not produce false positives.
+		resultNoMatch := podmanTest.Podman([]string{"events", "--stream=false", "--filter", "volume=zzz-no-such-volume"})
 
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(ExitCleanly())
 		events := result.OutputToStringArray()
-		Expect(events).To(HaveLen(1), "number of events")
-		Expect(events[0]).To(ContainSubstring(vname), "event log includes volume name")
+		// Exactly one create event for vname, not for vnameAlt.
+		Expect(events).To(HaveLen(1), "exact name filter: number of events")
+		Expect(events[0]).To(ContainSubstring(vname), "exact name filter: event log includes volume name")
+		Expect(events[0]).NotTo(ContainSubstring(vnameAlt), "exact name filter: must not include alt volume")
 
 		resultPrefix.WaitWithDefaultTimeout()
 		Expect(resultPrefix).Should(ExitCleanly())
 		events = resultPrefix.OutputToStringArray()
-		Expect(events).To(HaveLen(1), "number of events")
-		Expect(events[0]).To(ContainSubstring(vname), "event log includes volume name")
+		// Prefix matches both vname and vnameAlt → expect 2 events.
+		Expect(events).To(HaveLen(2), "prefix filter: number of events")
+		Expect(events[0]).To(ContainSubstring(vname), "prefix filter: first event log includes volume name")
+
+		resultNoMatch.WaitWithDefaultTimeout()
+		Expect(resultNoMatch).Should(ExitCleanly())
+		Expect(resultNoMatch.OutputToStringArray()).To(BeEmpty(), "non-matching filter must return zero events")
 	})
 
 	It("podman events with an event filter and container=cid", func() {
